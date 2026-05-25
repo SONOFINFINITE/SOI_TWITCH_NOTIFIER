@@ -8,7 +8,7 @@ const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
 const TWITCH_CHANNEL_NAME = process.env.TWITCH_CHANNEL_NAME;
 
 const PORT = process.env.PORT || 3000;
-const CHECK_INTERVAL_MS = 60000;
+const CHECK_INTERVAL_MS = 30000;
 const PING_INTERVAL_MS = 300000; 
 
 let twitchAccessToken = null;
