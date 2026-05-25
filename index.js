@@ -9,11 +9,11 @@ const TWITCH_CHANNEL_NAME = process.env.TWITCH_CHANNEL_NAME;
 
 const PORT = process.env.PORT || 3000;
 const CHECK_INTERVAL_MS = 60000;
+const PING_INTERVAL_MS = 300000; 
 
 let twitchAccessToken = null;
 let isStreamLive = false;
 
-// Веб-сервер с поддержкой маршрутов /no_sleep и /status
 const server = http.createServer((req, res) => {
     if (req.url === '/no_sleep') {
         const time = new Date().toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow' });
@@ -21,7 +21,6 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Awake\n');
     } else if (req.url === '/status') {
-        // Отдаем JSON со статусом "ok" для интеграции с Google Таблицами
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: "ok" }));
     } else {
@@ -97,8 +96,7 @@ async function sendTelegramMessage(stream) {
         .replace('{height}', '720') + `?t=${Date.now()}`;
 
     const caption = `Новый стрим на канале <b>${stream.user_name}</b>!\n\n` +
-                    `<b>Название:</b> ${stream.title}\n` +
-                    `<b>Категория:</b> ${stream.game_name}`;
+                    `Присоединяйтесь!\n`;
 
     const replyMarkup = {
         inline_keyboard: [
@@ -135,6 +133,28 @@ async function sendTelegramMessage(stream) {
     }
 }
 
+async function startSelfPing() {
+    const externalUrl = process.env.RENDER_EXTERNAL_URL;
+    
+    if (!externalUrl) {
+        console.log("Переменная RENDER_EXTERNAL_URL не найдена. Самопинг не запущен. Если скрипт запущен локально, это нормально.");
+        return;
+    }
+
+    console.log(`Настроен автоматический самопинг на адрес: ${externalUrl}/no_sleep`);
+    
+    setInterval(async () => {
+        try {
+            const response = await fetch(`${externalUrl}/no_sleep`);
+            if (!response.ok) {
+                console.error(`Ошибка самопинга. Статус: ${response.status}`);
+            }
+        } catch (error) {
+            console.error("Сетевая ошибка при попытке самопинга:", error.message);
+        }
+    }, PING_INTERVAL_MS);
+}
+
 async function startBot() {
     console.log(`Бот запущен. Отслеживается канал Twitch: ${TWITCH_CHANNEL_NAME}`);
     console.log(`ID Telegram чата для уведомлений: ${TELEGRAM_CHAT_ID}`);
@@ -148,6 +168,8 @@ async function startBot() {
         }
     }
     
+    startSelfPing();
+
     setInterval(async () => {
         try {
             await checkStreamStatus();
