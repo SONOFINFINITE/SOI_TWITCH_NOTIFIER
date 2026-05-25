@@ -133,5 +133,4 @@ async function startBot() {
         }
     }, CHECK_INTERVAL_MS);
 }
-
 startBot();
