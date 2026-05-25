@@ -8,17 +8,22 @@ const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
 const TWITCH_CHANNEL_NAME = process.env.TWITCH_CHANNEL_NAME;
 
 const PORT = process.env.PORT || 3000;
-const CHECK_INTERVAL_MS = 30000;
+const CHECK_INTERVAL_MS = 60000;
 
 let twitchAccessToken = null;
 let isStreamLive = false;
 
+// Веб-сервер с поддержкой маршрутов /no_sleep и /status
 const server = http.createServer((req, res) => {
     if (req.url === '/no_sleep') {
         const time = new Date().toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow' });
         console.log(`[${time}] Эндпоинт /no_sleep вызван. Сервер поддерживает активность.`);
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Awake\n');
+    } else if (req.url === '/status') {
+        // Отдаем JSON со статусом "ok" для интеграции с Google Таблицами
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: "ok" }));
     } else {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Twitch Telegram Bot is running!\n');
@@ -87,18 +92,14 @@ async function checkStreamStatus() {
 }
 
 async function sendTelegramMessage(stream) {
-    // Формируем ссылку на превью. Twitch отдает строку с {width} и {height}.
-    // Добавляем timestamp (?t=...), чтобы Telegram не кэшировал картинку с прошлого стрима.
     const thumbnailUrl = stream.thumbnail_url
         .replace('{width}', '1280')
         .replace('{height}', '720') + `?t=${Date.now()}`;
 
-    // Формируем текст под картинкой
     const caption = `Новый стрим на канале <b>${stream.user_name}</b>!\n\n` +
                     `<b>Название:</b> ${stream.title}\n` +
                     `<b>Категория:</b> ${stream.game_name}`;
 
-    // Создаем кнопку под сообщением
     const replyMarkup = {
         inline_keyboard: [
             [
@@ -110,7 +111,6 @@ async function sendTelegramMessage(stream) {
         ]
     };
 
-    // Используем метод sendPhoto вместо sendMessage
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`;
     const response = await fetch(url, {
         method: 'POST',
