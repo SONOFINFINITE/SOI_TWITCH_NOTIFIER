@@ -8,7 +8,7 @@ const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
 const TWITCH_CHANNEL_NAME = process.env.TWITCH_CHANNEL_NAME;
 
 const PORT = process.env.PORT || 3000;
-const CHECK_INTERVAL_MS = 60000;
+const CHECK_INTERVAL_MS = 30000;
 
 let twitchAccessToken = null;
 let isStreamLive = false;
@@ -87,12 +87,31 @@ async function checkStreamStatus() {
 }
 
 async function sendTelegramMessage(stream) {
-    const message = `🔴 Стример <b>${stream.user_name}</b> запустил трансляцию!\n\n` +
-                    `<b>Название:</b> ${stream.title}\n` +
-                    `<b>Категория:</b> ${stream.game_name}\n\n` +
-                    `🔗 https://twitch.tv/${TWITCH_CHANNEL_NAME}`;
+    // Формируем ссылку на превью. Twitch отдает строку с {width} и {height}.
+    // Добавляем timestamp (?t=...), чтобы Telegram не кэшировал картинку с прошлого стрима.
+    const thumbnailUrl = stream.thumbnail_url
+        .replace('{width}', '1280')
+        .replace('{height}', '720') + `?t=${Date.now()}`;
 
-    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    // Формируем текст под картинкой
+    const caption = `Новый стрим на канале <b>${stream.user_name}</b>!\n\n` +
+                    `<b>Название:</b> ${stream.title}\n` +
+                    `<b>Категория:</b> ${stream.game_name}`;
+
+    // Создаем кнопку под сообщением
+    const replyMarkup = {
+        inline_keyboard: [
+            [
+                {
+                    text: "Смотреть на Twitch",
+                    url: `https://twitch.tv/${TWITCH_CHANNEL_NAME}`
+                }
+            ]
+        ]
+    };
+
+    // Используем метод sendPhoto вместо sendMessage
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`;
     const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -100,9 +119,10 @@ async function sendTelegramMessage(stream) {
         },
         body: JSON.stringify({
             chat_id: TELEGRAM_CHAT_ID,
-            text: message,
+            photo: thumbnailUrl,
+            caption: caption,
             parse_mode: 'HTML',
-            disable_web_page_preview: false
+            reply_markup: replyMarkup
         })
     });
 
@@ -111,7 +131,7 @@ async function sendTelegramMessage(stream) {
     if (!response.ok) {
         console.error(`Ошибка Telegram API при отправке сообщения: ${JSON.stringify(data)}`);
     } else {
-        console.log(`Уведомление об эфире успешно отправлено в чат ${TELEGRAM_CHAT_ID}.`);
+        console.log(`Уведомление об эфире с превью успешно отправлено в чат ${TELEGRAM_CHAT_ID}.`);
     }
 }
 
