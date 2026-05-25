@@ -13,10 +13,16 @@ const CHECK_INTERVAL_MS = 60000;
 let twitchAccessToken = null;
 let isStreamLive = false;
 
-// Простой сервер, чтобы Render.com не убивал процесс
 const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Twitch Telegram Bot is running!\n');
+    if (req.url === '/no_sleep') {
+        const time = new Date().toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow' });
+        console.log(`[${time}] Эндпоинт /no_sleep вызван. Сервер поддерживает активность.`);
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Awake\n');
+    } else {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Twitch Telegram Bot is running!\n');
+    }
 });
 
 server.listen(PORT, () => {
@@ -133,4 +139,5 @@ async function startBot() {
         }
     }, CHECK_INTERVAL_MS);
 }
+
 startBot();
