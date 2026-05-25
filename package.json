@@ -1,0 +1,13 @@
+{
+  "name": "twitch-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for single Twitch channel tracking",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}
