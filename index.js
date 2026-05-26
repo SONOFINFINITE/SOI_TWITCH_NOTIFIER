@@ -1,36 +1,100 @@
 import 'dotenv/config';
-import http from 'http';
+import express from 'express';
+import crypto from 'crypto';
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
 const TWITCH_CHANNEL_NAME = process.env.TWITCH_CHANNEL_NAME;
+const TWITCH_WEBHOOK_SECRET = process.env.TWITCH_WEBHOOK_SECRET;
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL;
 
 const PORT = process.env.PORT || 3000;
-const CHECK_INTERVAL_MS = 30000;
-const PING_INTERVAL_MS = 300000; 
+const PING_INTERVAL_MS = 300000;
 
 let twitchAccessToken = null;
-let isStreamLive = false;
+let broadcasterId = null;
 
-const server = http.createServer((req, res) => {
-    if (req.url === '/no_sleep') {
-        const time = new Date().toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow' });
-        console.log(`[${time}] Эндпоинт /no_sleep вызван. Сервер поддерживает активность.`);
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Awake\n');
-    } else if (req.url === '/status') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: "ok" }));
-    } else {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Twitch Telegram Bot is running!\n');
+const app = express();
+
+function getTime() {
+    return new Date().toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow' });
+}
+
+// Middleware для сохранения сырого тела запроса. Это критически важно для проверки подписи Twitch.
+app.use(express.json({
+    verify: (req, res, buf) => {
+        req.rawBody = buf;
     }
+}));
+
+app.get('/no_sleep', (req, res) => {
+    console.log(`[${getTime()}] Эндпоинт /no_sleep вызван. Сервер поддерживает активность.`);
+    res.status(200).send('Awake\n');
 });
 
-server.listen(PORT, () => {
-    console.log(`Web-сервер запущен на порту ${PORT}`);
+app.get('/status', (req, res) => {
+    res.status(200).json({ status: "ok" });
+});
+
+app.get('/', (req, res) => {
+    res.status(200).send('Twitch Telegram Bot is running on EventSub Webhooks!\n');
+});
+
+// Функция проверки цифровой подписи Twitch
+function verifyTwitchSignature(req, res, next) {
+    const messageId = req.headers['twitch-eventsub-message-id'];
+    const timestamp = req.headers['twitch-eventsub-message-timestamp'];
+    const messageSignature = req.headers['twitch-eventsub-message-signature'];
+
+    if (!messageId || !timestamp || !messageSignature) {
+        console.warn(`[${getTime()}] Отклонен запрос без необходимых заголовков EventSub.`);
+        return res.status(403).send('Forbidden');
+    }
+
+    const message = messageId + timestamp + req.rawBody;
+    const signature = 'sha256=' + crypto.createHmac('sha256', TWITCH_WEBHOOK_SECRET).update(message).digest('hex');
+
+    if (crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(messageSignature))) {
+        next();
+    } else {
+        console.warn(`[${getTime()}] Отклонен запрос с неверной подписью.`);
+        res.status(403).send('Invalid signature');
+    }
+}
+
+// Эндпоинт для приема вебхуков от Twitch
+app.post('/twitch/webhook', verifyTwitchSignature, async (req, res) => {
+    const messageType = req.headers['twitch-eventsub-message-type'];
+
+    // Ответ на Challenge при регистрации подписки
+    if (messageType === 'webhook_callback_verification') {
+        const challenge = req.body.challenge;
+        console.log(`[${getTime()}] Успешно пройдена проверка подлинности (Challenge) для вебхука.`);
+        return res.status(200).send(challenge);
+    }
+
+    // Обработка уведомлений о событиях
+    if (messageType === 'notification') {
+        const event = req.body.event;
+        const subscriptionType = req.body.subscription.type;
+
+        if (subscriptionType === 'stream.online') {
+            console.log(`[${getTime()}] Получено уведомление: Стрим на канале ${event.broadcaster_user_name} начался.`);
+            // Событие stream.online не содержит превью, запрашиваем данные потока
+            const streamData = await getStreamData(event.broadcaster_user_id);
+            if (streamData) {
+                await sendTelegramMessage(streamData);
+            }
+        } else if (subscriptionType === 'stream.offline') {
+            console.log(`[${getTime()}] Получено уведомление: Стрим на канале ${event.broadcaster_user_name} завершен.`);
+        }
+        
+        return res.sendStatus(204);
+    }
+
+    res.sendStatus(200);
 });
 
 async function getTwitchAccessToken() {
@@ -43,50 +107,83 @@ async function getTwitchAccessToken() {
     }
     
     twitchAccessToken = data.access_token;
-    console.log("Успешно получен или обновлен токен доступа Twitch.");
+    console.log(`[${getTime()}] Успешно получен токен доступа Twitch.`);
 }
 
-async function checkStreamStatus() {
-    if (!twitchAccessToken) {
-        await getTwitchAccessToken();
-    }
-
-    const url = `https://api.twitch.tv/helix/streams?user_login=${TWITCH_CHANNEL_NAME}`;
-    let response = await fetch(url, {
+async function getBroadcasterId() {
+    const url = `https://api.twitch.tv/helix/users?login=${TWITCH_CHANNEL_NAME}`;
+    const response = await fetch(url, {
         headers: {
             'Client-ID': TWITCH_CLIENT_ID,
             'Authorization': `Bearer ${twitchAccessToken}`
         }
     });
 
-    if (response.status === 401) {
-        console.log("Токен Twitch истек. Выполняется обновление токена...");
-        await getTwitchAccessToken();
-        response = await fetch(url, {
-            headers: {
-                'Client-ID': TWITCH_CLIENT_ID,
-                'Authorization': `Bearer ${twitchAccessToken}`
-            }
-        });
+    const data = await response.json();
+    
+    if (!response.ok || data.data.length === 0) {
+        throw new Error(`Не удалось найти пользователя Twitch с логином ${TWITCH_CHANNEL_NAME}`);
+    }
+
+    broadcasterId = data.data[0].id;
+    console.log(`[${getTime()}] Определен ID канала ${TWITCH_CHANNEL_NAME}: ${broadcasterId}`);
+}
+
+async function getStreamData(userId) {
+    const url = `https://api.twitch.tv/helix/streams?user_id=${userId}`;
+    const response = await fetch(url, {
+        headers: {
+            'Client-ID': TWITCH_CLIENT_ID,
+            'Authorization': `Bearer ${twitchAccessToken}`
+        }
+    });
+
+    const data = await response.json();
+    
+    if (!response.ok || data.data.length === 0) {
+        console.error(`[${getTime()}] Не удалось получить данные потока для формирования превью.`);
+        return null;
+    }
+
+    return data.data[0];
+}
+
+async function subscribeToEventSub(type) {
+    const url = 'https://api.twitch.tv/helix/eventsub/subscriptions';
+    const body = {
+        type: type,
+        version: '1',
+        condition: {
+            broadcaster_user_id: broadcasterId
+        },
+        transport: {
+            method: 'webhook',
+            callback: `${RENDER_EXTERNAL_URL}/twitch/webhook`,
+            secret: TWITCH_WEBHOOK_SECRET
+        }
+    };
+
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Client-ID': TWITCH_CLIENT_ID,
+            'Authorization': `Bearer ${twitchAccessToken}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+    });
+
+    if (response.status === 409) {
+        console.log(`[${getTime()}] Подписка на событие ${type} уже существует.`);
+        return;
     }
 
     const data = await response.json();
     
     if (!response.ok) {
-        console.error(`Ошибка Twitch API: ${JSON.stringify(data)}`);
-        return;
-    }
-
-    const streamData = data.data;
-    
-    if (streamData && streamData.length > 0) {
-        if (!isStreamLive) {
-            isStreamLive = true;
-            const stream = streamData[0];
-            await sendTelegramMessage(stream);
-        }
+        console.error(`[${getTime()}] Ошибка подписки на ${type}: ${JSON.stringify(data)}`);
     } else {
-        isStreamLive = false;
+        console.log(`[${getTime()}] Успешно зарегистрирована подписка на событие: ${type}`);
     }
 }
 
@@ -127,59 +224,50 @@ async function sendTelegramMessage(stream) {
     const data = await response.json();
     
     if (!response.ok) {
-        console.error(`Ошибка Telegram API при отправке сообщения: ${JSON.stringify(data)}`);
+        console.error(`[${getTime()}] Ошибка Telegram API при отправке сообщения: ${JSON.stringify(data)}`);
     } else {
-        console.log(`Уведомление об эфире с превью успешно отправлено в чат ${TELEGRAM_CHAT_ID}.`);
+        console.log(`[${getTime()}] Уведомление об эфире с превью успешно отправлено в чат ${TELEGRAM_CHAT_ID}.`);
     }
 }
 
-async function startSelfPing() {
-    const externalUrl = process.env.RENDER_EXTERNAL_URL;
-    
-    if (!externalUrl) {
-        console.log("Переменная RENDER_EXTERNAL_URL не найдена. Самопинг не запущен. Если скрипт запущен локально, это нормально.");
+function startSelfPing() {
+    if (!RENDER_EXTERNAL_URL) {
+        console.log(`[${getTime()}] Переменная RENDER_EXTERNAL_URL не найдена. Самопинг отключен.`);
         return;
     }
 
-    console.log(`Настроен автоматический самопинг на адрес: ${externalUrl}/no_sleep`);
+    console.log(`[${getTime()}] Настроен автоматический самопинг на адрес: ${RENDER_EXTERNAL_URL}/no_sleep`);
     
     setInterval(async () => {
         try {
-            const response = await fetch(`${externalUrl}/no_sleep`);
+            const response = await fetch(`${RENDER_EXTERNAL_URL}/no_sleep`);
             if (!response.ok) {
-                console.error(`Ошибка самопинга. Статус: ${response.status}`);
+                console.error(`[${getTime()}] Ошибка самопинга. Статус: ${response.status}`);
             }
         } catch (error) {
-            console.error("Сетевая ошибка при попытке самопинга:", error.message);
+            console.error(`[${getTime()}] Сетевая ошибка при попытке самопинга:`, error.message);
         }
     }, PING_INTERVAL_MS);
 }
 
-async function startBot() {
-    console.log(`Бот запущен. Отслеживается канал Twitch: ${TWITCH_CHANNEL_NAME}`);
-    console.log(`ID Telegram чата для уведомлений: ${TELEGRAM_CHAT_ID}`);
+app.listen(PORT, async () => {
+    console.log(`===========================================`);
+    console.log(`[${getTime()}] Web-сервер запущен на порту ${PORT}`);
     
-    try {
-        await checkStreamStatus();
-    } catch (error) {
-        console.error("Ошибка при первой проверке:", error.message);
-        if (error.cause) {
-            console.error("Детали сетевой ошибки:", error.cause);
-        }
+    if (!RENDER_EXTERNAL_URL) {
+        console.error(`[${getTime()}] ВНИМАНИЕ: Для работы EventSub необходимо указать RENDER_EXTERNAL_URL.`);
+        return;
     }
-    
-    startSelfPing();
 
-    setInterval(async () => {
-        try {
-            await checkStreamStatus();
-        } catch (error) {
-            console.error("Ошибка во время цикличной проверки статуса:", error.message);
-            if (error.cause) {
-                console.error("Детали сетевой ошибки:", error.cause);
-            }
-        }
-    }, CHECK_INTERVAL_MS);
-}
-
-startBot();
+    try {
+        await getTwitchAccessToken();
+        await getBroadcasterId();
+        
+        await subscribeToEventSub('stream.online');
+        await subscribeToEventSub('stream.offline');
+        
+        startSelfPing();
+    } catch (error) {
+        console.error(`[${getTime()}] Ошибка при инициализации:`, error.message);
+    }
+});
