@@ -262,11 +262,17 @@ app.listen(PORT, async () => {
     try {
         await getTwitchAccessToken();
         await getBroadcasterId();
-        
-        await subscribeToEventSub('stream.online');
-        await subscribeToEventSub('stream.offline');
-        
         startSelfPing();
+        
+        console.log(`[${getTime()}] Ждем 20 секунд, пока Render полностью откроет маршрутизацию к серверу...`);
+        
+        // Отложенная подписка, чтобы Challenge точно дошел до нас
+        setTimeout(async () => {
+            console.log(`[${getTime()}] Отправляем запросы на регистрацию вебхуков...`);
+            await subscribeToEventSub('stream.online');
+            await subscribeToEventSub('stream.offline');
+        }, 20000);
+        
     } catch (error) {
         console.error(`[${getTime()}] Ошибка при инициализации:`, error.message);
     }
